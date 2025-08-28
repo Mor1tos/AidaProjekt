@@ -1,0 +1,66 @@
+#!/bin/bash
+# -----------------------------------------------------------------------------
+# Dateiname:     aida_localcheck.sh
+# Beschreibung:  Checkmk Local Check: AIDA-Schiffsbewegungen letzte 24h
+# Autor:         Moritz Keller
+# Version:       1.2 (vereinfacht: keine Metriken, Servicenamen mit "Track")
+# -----------------------------------------------------------------------------
+# Ausgabeformat:
+#   <status> "Track <ship>" - "<description>"
+# Status: 0=OK, 1=WARN
+# -----------------------------------------------------------------------------
+
+daten_dir="/home/mkeller/ansible_aida/Daten"
+thr_km=50
+now=$(date +%s)
+limit=$(( now - 24*3600 ))
+
+for file in "$daten_dir"/*.csv; do
+    ship=$(basename "$file" .csv)
+
+    awk -F, -v limit="$limit" -v thr="$thr_km" -v ship="$ship" '
+    function toRad(x){ return x*3.14159265358979/180 }
+    function haversine(lat1, lon1, lat2, lon2){
+        dlat = toRad(lat2-lat1)
+        dlon = toRad(lon2-lon1)
+        a = (sin(dlat/2))^2 + cos(toRad(lat1)) * cos(toRad(lat2)) * (sin(dlon/2))^2
+        c = 2*atan2(sqrt(a), sqrt(1-a))
+        return 6371*c  # km
+    }
+    BEGIN { last_t=0; last_lat=0; last_lon=0; movement_detected=0; err_point="" }
+    NR>1 && $1=="T" {
+        t_raw=$2
+        if (t_raw ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]/) {
+            gsub(" ", "T", t_raw)
+        }
+        cmd="date -d \""t_raw"\" +%s"
+        if ((cmd | getline t) > 0) {
+            close(cmd)
+            if (t >= limit) {
+                if (last_t > 0) {
+                    dist = haversine(last_lat,last_lon,$3,$4)
+                    if (dist > thr) {
+                        err_point = t_raw " (" dist " km)"
+                        movement_detected=2
+                        exit
+                    }
+                    if (dist > 0.1) { movement_detected=1 }
+                }
+                last_t=t; last_lat=$3; last_lon=$4
+            }
+        }
+        close(cmd)
+    }
+    END {
+        if (movement_detected==0) {
+            print "1 \"Track "ship"\" - \"No movement in last 24h\""
+        } else if (movement_detected==2) {
+            print "1 \"Track "ship"\" - \"Unrealistic jump at " err_point "\""
+        } else {
+            print "0 \"Track "ship"\" - \"Movement within limits\""
+        }
+    }
+    ' "$file"
+
+done
+

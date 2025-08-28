@@ -1,0 +1,78 @@
+#!/bin/bash
+# -----------------------------------------------------------------------------
+# Dateiname:     aida_schiffpositionen_sichern
+# Beschreibung:  Dieses Skript lädt aktuelle AIDA-Schiffspositionen (XML),
+#                extrahiert relevante Daten und speichert sie in CSV-Dateien je Schiff.
+#		 Dazu fügt es die einzelnen Daten in eine Datei zusammen.
+# Autor:         Moritz Keller
+# Erstellt:      2025-07-18
+# Version:       1.0
+# -----------------------------------------------------------------------------
+# Änderungsverlauf:
+# 2025-07-18 (v1.0) - Erstversion des Skripts zur Datenextraktion aus XML.
+# 2025-08-06 (v1.1) - Das script, indem die DATEN.gz datei erzeigt wurde, wurde hier mit integriert
+# -----------------------------------------------------------------------------
+# Nutzung:
+#   ./aida_schiffpositionen_sichern
+#
+# Abhängigkeiten:
+#   wget, awk, gzip, bash
+#   https://www.aida.de/webcam/shippositions.xml
+# -----------------------------------------------------------------------------
+
+# Wechsle ins Projektverzeichnis
+cd ansible_aida
+pfad="/home/mkeller/windows_share53/DATEN"
+# Alte Zieldatei löschen, falls vorhanden
+rm -f $pfad ${pfad}.gz
+
+# Lade XML-Datei von AIDA-Webseite über Proxy und verarbeite sie direkt mit awk
+https_proxy=http://proxy.wdr.de:8080 \
+wget -q \
+     -U 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0' \
+     https://www.aida.de/webcam/shippositions.xml -O - | \
+awk '
+  /ShipName/ {
+    # Extrahiere den Schiffsnamen aus dem 3. Feld
+    split($3, shipname, "\"");
+    name = shipname[2];
+  }
+  /Voraus/ {
+    split($4, link, "\"");
+    bild=gensub("^(.*)media(.*)ahead_625(.*)","\\1www\\2bow_pano_960\\3","g",link[2])
+    # bild = link[2];
+  }
+  /data/ {
+    # Extrahiere Latitude, Longitude und Zeit aus den Feldern 2, 3 und 10
+    split($2, lat, "\"");
+    split($3, long, "\"");
+    split($10, time, "\"");
+  }
+  /\/ship/{
+    # Setze Dateinamen: "Daten/<Schiffsname>.csv"
+    filename = "Daten/" name ".csv";
+
+    # Schreibe CSV-Zeile in die entsprechende Datei
+    printf "%s,%s,%s,%s,%s\n", "T", time[2], lat[2], long[2], name >> filename;
+    printf "%s,%s,%s,%s,%s,%s\n", "W", "", lat[2], long[2], name, bild > "Daten/Waypoints";
+    
+  }'
+
+# Durchlaufe alle CSV-Dateien im Verzeichnis "Daten"
+for file in Daten/*.csv; do
+    # Schreibe einmalig die Kopfzeile in die Zieldatei (ACHTUNG: wird bei jedem Schleifendurchlauf erneut geschrieben!)
+    echo "type,time,latitude,longitude,name,photo" >> "$pfad"
+
+    # Hänge die Inhalte der aktuellen Datei an die Zieldatei an
+    cat "$file" >> "$pfad"
+done
+
+# Füge erneut die Kopfzeile vor den Waypoints hinzu
+echo "type,time,latitude,longitude,name,photo" >> "$pfad"
+
+# Hänge die Waypoints-Datei an die Zieldatei an
+cat "Daten/Waypoints" >> "$pfad"
+
+# Komprimiere die fertige Datei (überschreibt die unkomprimierte Version)
+cat "$pfad" | gzip >  "$pfad".gz
+
